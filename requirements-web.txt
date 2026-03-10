@@ -1,0 +1,7 @@
+streamlit>=1.35
+boto3
+openpyxl
+pyarrow
+sqlalchemy
+pyodbc
+pandas

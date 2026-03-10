@@ -1,0 +1,42 @@
+pipeline:
+  name: customer_import
+
+source:
+  path: C:/data/customers.csv      # overridden by --file CLI arg
+  separator: ","
+  encoding: utf-8-sig
+  chunk_size: 10000
+
+destination:
+  table: customers
+  schema: dbo
+  load_mode: upsert                # replace | append | skip_existing | upsert
+  primary_keys: [customer_id]      # required for skip_existing / upsert
+  quarantine_table: etl_errors     # optional; rows failing validation go here
+
+transform:
+  steps:
+    - trim_whitespace              # string shorthand → no params
+    - normalize_nulls
+    - name: validate_required
+      params:
+        columns: [customer_id, email]
+    - name: date_parser
+      params:
+        columns: [created_at]
+        format: "%d/%m/%Y"
+    - name: phone_parser
+      params:
+        columns: [mobile]
+        region: US
+    - name: email_parser
+      params:
+        columns: [email]
+    - name: numeric_parser
+      params:
+        columns: [salary]
+        thousands_sep: ","
+
+audit:
+  enabled: true
+  schema: dbo
