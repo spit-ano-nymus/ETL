@@ -1,0 +1,68 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets.toml
+.streamlit/secrets.toml
+
+# ── Data files (never commit raw data to the repo) ────────────────────────────
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.json.bak
+
+# ── Temporary upload directory ────────────────────────────────────────────────
+tmp/
+/tmp/etl_uploads/
+
+# ── Pipeline configs that may contain credentials or local paths ──────────────
+# Keep the example; ignore any personal/environment-specific overrides
+config/local_*.yaml
+config/prod_*.yaml
+config/dev_*.yaml
+config/*_secrets.yaml
+
+# ── IDE — PyCharm ─────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ── IDE — VS Code ─────────────────────────────────────────────────────────────
+.vscode/
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Claude Code local settings (machine-specific) ────────────────────────────
+.claude/
+
+# ── Pytest / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
