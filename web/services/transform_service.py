@@ -70,8 +70,14 @@ def apply_selected_transforms(
             fn, _ = resolve_step(step_name)
             try:
                 kwargs = {}
-                # Validators that require a column list fall back to all columns
-                if step_name in ("validate_required", "validate_no_duplicates"):
+                # validate_required: skip entirely when no columns specified (avoids wiping all rows)
+                if step_name == "validate_required":
+                    if not columns:
+                        logger.debug("validate_required skipped — no required columns specified")
+                        continue
+                    kwargs["columns"] = columns
+                # validate_no_duplicates: full-row dedup is safe even without explicit columns
+                elif step_name == "validate_no_duplicates":
                     kwargs["columns"] = columns or list(result.columns)
                 # Parsers require explicit column lists — skip if none provided
                 elif step_name in ("date_parser", "email_parser", "phone_parser", "numeric_parser"):

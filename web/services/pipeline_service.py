@@ -62,6 +62,7 @@ def _run_job(
     rows_inserted = 0
     rows_updated = 0
     rows_skipped = 0
+    rows_dropped = 0
     chunk_index = 0
 
     try:
@@ -72,6 +73,7 @@ def _run_job(
 
             # Transform
             transformed = apply_selected_transforms(chunk, actions)
+            rows_dropped += len(chunk) - len(transformed)
 
             # Load
             stats = writer(transformed, chunk_index)
@@ -97,6 +99,7 @@ def _run_job(
             "rows_inserted": rows_inserted,
             "rows_updated": rows_updated,
             "rows_skipped": rows_skipped,
+            "rows_dropped": rows_dropped,
             "elapsed_seconds": round(elapsed, 2),
             "chunks": chunk_index,
         }

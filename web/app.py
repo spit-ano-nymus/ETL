@@ -331,6 +331,7 @@ def _render_summary() -> None:
             "Status": job.get("status", "?"),
             "Rows read": stats.get("rows_read", "—"),
             "Inserted": stats.get("rows_inserted", "—"),
+            "Dropped": stats.get("rows_dropped", "—"),
             "Updated": stats.get("rows_updated", "—"),
             "Skipped": stats.get("rows_skipped", "—"),
             "Duration (s)": stats.get("elapsed_seconds", "—"),

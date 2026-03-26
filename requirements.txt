@@ -3,3 +3,7 @@ pyodbc>=4.0.0
 sqlalchemy>=2.0.0
 python-dotenv>=1.0.0
 PyYAML>=6.0.1
+streamlit>=1.35
+boto3
+openpyxl
+pyarrow

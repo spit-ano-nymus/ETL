@@ -54,13 +54,16 @@ def build_sqlserver_connection_string(creds: dict) -> str:
     trusted = creds.get("trusted_connection", False)
 
     if trusted:
-        params = f"driver={driver};server={server};database={database};trusted_connection=yes"
+        params = (
+            f"driver={driver};server={server};database={database};"
+            f"trusted_connection=yes;TrustServerCertificate=yes"
+        )
     else:
         username = creds.get("username", "")
         password = creds.get("password", "")
         params = (
             f"driver={driver};server={server};database={database};"
-            f"uid={username};pwd={password}"
+            f"uid={username};pwd={password};TrustServerCertificate=yes"
         )
 
     return f"mssql+pyodbc:///?odbc_connect={quote_plus(params)}"

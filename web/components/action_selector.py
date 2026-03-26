@@ -18,7 +18,7 @@ _ACTION_LABELS = {
 
 _ACTION_DEFAULTS = {
     "cleaning": True,
-    "validation": True,
+    "validation": False,  # opt-in: only enable if you know which columns are required
     "parsing": False,
     "mining": True,
 }
