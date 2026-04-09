@@ -47,6 +47,16 @@ def validate_path(path: str) -> str:
 
 # ── preview helpers ───────────────────────────────────────────────────────────
 
+def get_file_columns(path: str) -> list[str]:
+    """Return column names from a CSV or Excel file without loading any data rows."""
+    p = Path(path)
+    if p.suffix.lower() in (".xlsx", ".xls"):
+        return list(pd.read_excel(path, nrows=0, dtype=str).columns)
+    for chunk in stream_csv(path, chunk_size=1):
+        return list(chunk.columns)
+    return []
+
+
 def sample_rows(path: str, n: int = 1000) -> pd.DataFrame:
     """
     Return the first `n` rows of a CSV or Excel file without loading it fully.

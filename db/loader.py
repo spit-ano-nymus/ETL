@@ -12,6 +12,7 @@ Also writes one audit-log row per pipeline run to etl_audit_log.
 """
 
 import logging
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 # Max PKs to include in a single IN-clause batch
 _PK_BATCH = 1_000
+# Max PK values to collect per chunk for the UI sample
+_PK_SAMPLE = 100
+
+
+def _safe_param(col: str) -> str:
+    """Return a bind-parameter-safe name: replace non-alphanumeric chars with '_'."""
+    return re.sub(r"[^a-zA-Z0-9]", "_", col)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -109,7 +117,7 @@ def bulk_load(
         return _notify({"inserted": len(new_df), "updated": 0, "skipped": skipped})
 
     if load_mode == "upsert":
-        new_df, existing_df = _split_new_existing(df, table, schema, engine, primary_keys)
+        new_df, existing_df, table_existed = _split_new_existing(df, table, schema, engine, primary_keys)
         skipped = 0
 
         if not new_df.empty:
@@ -127,7 +135,12 @@ def bulk_load(
             "upsert: %d inserted, %d updated, %d skipped",
             len(new_df), updated, skipped,
         )
-        return _notify({"inserted": len(new_df), "updated": updated, "skipped": skipped})
+        return _notify({
+            "inserted": len(new_df), "updated": updated, "skipped": skipped,
+            "table_existed": table_existed,
+            "inserted_rows_sample": _extract_row_sample(new_df) if table_existed else [],
+            "updated_rows_sample": _extract_row_sample(existing_df),
+        })
 
     raise ValueError(
         f"Unknown load_mode '{load_mode}'. "
@@ -209,18 +222,26 @@ def _split_new_existing(
     schema: str,
     engine,
     primary_keys: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split df into (new_rows, existing_rows) based on PK presence."""
+) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+    """Split df into (new_rows, existing_rows, table_existed) based on PK presence."""
     try:
         existing = _get_existing_pks(df, table, schema, engine, primary_keys)
     except Exception:
-        return df, pd.DataFrame(columns=df.columns)  # table doesn't exist yet
+        return df, pd.DataFrame(columns=df.columns), False  # table doesn't exist yet
 
+    table_existed = True  # _get_existing_pks succeeded → table exists
     if not existing:
-        return df, pd.DataFrame(columns=df.columns)
+        return df, pd.DataFrame(columns=df.columns), table_existed
 
     existing_mask = _pk_series(df, primary_keys).isin(existing)
-    return df[~existing_mask].copy(), df[existing_mask].copy()
+    return df[~existing_mask].copy(), df[existing_mask].copy(), table_existed
+
+
+def _extract_row_sample(df: pd.DataFrame) -> list[dict]:
+    """Return up to _PK_SAMPLE full rows as a list of dicts."""
+    if df.empty:
+        return []
+    return df.head(_PK_SAMPLE).astype(str).to_dict("records")
 
 
 def _batch_update(
@@ -235,14 +256,19 @@ def _batch_update(
     if not non_pk_cols:
         return 0
 
-    set_clause = ", ".join(f"[{c}] = :{c}" for c in non_pk_cols)
-    where_clause = " AND ".join(f"[{c}] = :{c}" for c in primary_keys)
+    # Use _safe_param() for bind names — column names with spaces (e.g. "Job Title")
+    # would break SQLAlchemy's :name tokeniser if used literally.
+    set_clause = ", ".join(f"[{c}] = :{_safe_param(c)}" for c in non_pk_cols)
+    where_clause = " AND ".join(f"[{c}] = :{_safe_param(c)}" for c in primary_keys)
     sql = text(
         f"UPDATE [{schema}].[{table}] SET {set_clause} WHERE {where_clause}"
     )
 
-    # Replace NaN with None so SQLAlchemy sends NULL
-    records = df.where(pd.notnull(df), other=None).to_dict("records")
+    # Replace NaN with None so SQLAlchemy sends NULL; use safe param keys
+    records = [
+        {_safe_param(k): v for k, v in row.items()}
+        for row in df.where(pd.notnull(df), other=None).to_dict("records")
+    ]
 
     with engine.begin() as conn:
         conn.execute(sql, records)

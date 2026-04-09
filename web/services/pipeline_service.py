@@ -55,6 +55,7 @@ def _run_job(
     source = job["file_source"]
     path = source["path"]
     actions = job.get("actions", {})
+    column_renames = job.get("column_renames", {})
     chunk_size = 10_000
 
     started_at = datetime.utcnow()
@@ -64,6 +65,11 @@ def _run_job(
     rows_skipped = 0
     rows_dropped = 0
     chunk_index = 0
+    inserted_rows_sample: list = []
+    updated_rows_sample: list = []
+    dropped_rows_sample: list = []
+    table_existed = False
+    _ROW_SAMPLE_CAP = 200
 
     try:
         writer = get_destination_writer(job)
@@ -71,15 +77,32 @@ def _run_job(
         for chunk in stream_file(path, chunk_size=chunk_size):
             rows_read += len(chunk)
 
+            # Apply column renames before any transform
+            if column_renames:
+                chunk = chunk.rename(columns=column_renames)
+
             # Transform
-            transformed = apply_selected_transforms(chunk, actions)
+            transformed, dropped = apply_selected_transforms(chunk, actions)
             rows_dropped += len(chunk) - len(transformed)
+
+            if len(dropped_rows_sample) < _ROW_SAMPLE_CAP and not dropped.empty:
+                dropped_rows_sample.extend(dropped.head(_ROW_SAMPLE_CAP).astype(str).to_dict("records"))
+                dropped_rows_sample[:] = dropped_rows_sample[:_ROW_SAMPLE_CAP]
 
             # Load
             stats = writer(transformed, chunk_index)
             rows_inserted += stats.get("inserted", 0)
             rows_updated += stats.get("updated", 0)
             rows_skipped += stats.get("skipped", 0)
+
+            if stats.get("table_existed"):
+                table_existed = True
+            if len(inserted_rows_sample) < _ROW_SAMPLE_CAP:
+                inserted_rows_sample.extend(stats.get("inserted_rows_sample", []))
+                inserted_rows_sample[:] = inserted_rows_sample[:_ROW_SAMPLE_CAP]
+            if len(updated_rows_sample) < _ROW_SAMPLE_CAP:
+                updated_rows_sample.extend(stats.get("updated_rows_sample", []))
+                updated_rows_sample[:] = updated_rows_sample[:_ROW_SAMPLE_CAP]
 
             pq.put(ProgressEvent(
                 job_id=job_id,
@@ -102,6 +125,10 @@ def _run_job(
             "rows_dropped": rows_dropped,
             "elapsed_seconds": round(elapsed, 2),
             "chunks": chunk_index,
+            "table_existed": table_existed,
+            "inserted_rows_sample": inserted_rows_sample,
+            "updated_rows_sample": updated_rows_sample,
+            "dropped_rows_sample": dropped_rows_sample,
         }
 
         pq.put(ProgressEvent(

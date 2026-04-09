@@ -61,8 +61,21 @@ def _step1() -> None:
     from web.components.file_input import render_file_input
     from web.components.destination_form import render_destination_form
 
+    from web.components.column_renamer import render_column_renamer
+    from web.services.file_service import get_file_columns
+
     session_id = st.session_state["etl.session_id"]
     file_source = render_file_input(session_id)
+
+    # Show column renamer as soon as a file is selected
+    column_renames: dict = {}
+    if file_source:
+        try:
+            cols = get_file_columns(file_source["path"])
+            if cols:
+                column_renames = render_column_renamer(cols)
+        except Exception:
+            pass  # file not readable yet — skip silently
 
     st.divider()
     destination = render_destination_form()
@@ -104,6 +117,7 @@ def _step1() -> None:
                     "table_name": table_name,
                     "schema_name": schema_name,
                     "primary_keys": pks,
+                    "column_renames": column_renames,
                     "status": "pending",
                     "preview_df": None,
                     "stats": {},
