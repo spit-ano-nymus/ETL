@@ -36,9 +36,15 @@ def get_engine(connection_string: str | None = None):
         When provided, creates a new engine directly from the URL —
         useful for the web UI where credentials are supplied at runtime.
         When omitted, delegates to the infra library (legacy CLI path).
+
+    Supported dialects: mssql+pyodbc, postgresql+psycopg2.
+    ``fast_executemany`` is only passed for MSSQL connections (pyodbc feature).
     """
     if connection_string is not None:
         from sqlalchemy import create_engine
-        return create_engine(connection_string, fast_executemany=True)
+        kwargs = {}
+        if connection_string.startswith("mssql"):
+            kwargs["fast_executemany"] = True
+        return create_engine(connection_string, **kwargs)
     return _get_engine_from_infra()
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 
 # ETL Studio
 
-A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server or AWS S3, with an optional Streamlit web interface for non-technical users.
+A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server, PostgreSQL, or AWS S3, with an optional Streamlit web interface for non-technical users.
 
 ---
 
@@ -10,7 +10,8 @@ A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server or 
 - **Chunked streaming** — processes files of any size (1.5 GB+) with constant RAM usage (one 10 000-row chunk at a time)
 - **Four load modes** — `replace`, `append`, `upsert`, `skip_existing`
 - **Transform pipeline** — cleaning, validation, and parsing steps via a plug-in registry
-- **Audit log** — every run writes a row to `etl_audit_log` in SQL Server
+- **Multi-database support** — writes to SQL Server (pyodbc), PostgreSQL (psycopg2), or AWS S3
+- **Audit log** — every run writes a row to `etl_audit_log` (auto-created, dialect-aware DDL)
 - **Web UI** — Streamlit front-end for point-and-click ETL without touching YAML or a terminal
 - **S3 destination** — writes Parquet chunks to AWS S3 via boto3
 
@@ -41,7 +42,7 @@ ETL/
 │       └── numeric_parser.py
 ├── db/
 │   ├── engine.py                   # SQLAlchemy engine factory
-│   └── loader.py                   # bulk_load() — SQL Server writer
+│   └── loader.py                   # bulk_load() — SQL Server & PostgreSQL writer
 ├── utils/
 │   ├── file_utils.py               # resolve_path(), assert_readable()
 │   └── logging_utils.py
@@ -50,7 +51,7 @@ ETL/
     ├── config.py                   # Session state initialisation
     ├── components/
     │   ├── file_input.py           # Path / upload tabs
-    │   ├── destination_form.py     # SQL Server / S3 credential forms
+    │   ├── destination_form.py     # SQL Server / PostgreSQL / S3 credential forms
     │   ├── action_selector.py      # Action checkboxes from registry
     │   ├── batch_queue.py          # Queued jobs table
     │   ├── preview_table.py        # Data preview + column stats
@@ -83,7 +84,10 @@ pip install -r requirements.txt
 pip install -r requirements-web.txt
 ```
 
-**Requirements:** Python 3.11+, an ODBC driver for SQL Server (e.g. [ODBC Driver 17 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)).
+**Requirements:** Python 3.11+.
+
+- **SQL Server** target: an ODBC driver (e.g. [ODBC Driver 17 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)).
+- **PostgreSQL** target: `psycopg2-binary` (included in `requirements-web.txt`). No extra system driver needed.
 
 ---
 
@@ -154,7 +158,7 @@ The UI walks through four steps:
 
 | Step | What happens |
 |------|-------------|
-| **1 — Input & Destination** | Choose a file (server path or upload) and configure the SQL Server or S3 destination. Add multiple files to a batch queue. |
+| **1 — Input & Destination** | Choose a file (server path or upload) and configure the SQL Server, PostgreSQL, or S3 destination. Add multiple files to a batch queue. |
 | **2 — Actions & Batch Review** | Select transform actions (cleaning, validation, parsing, mining). Review the queue. |
 | **3 — Review** | Preview the first 1 000 rows. If the target table already exists, choose a load mode. View column statistics. Draft a SQL query (not executed). |
 | **4 — Upload & Progress** | Jobs run sequentially. Live progress bars update every 300 ms. Download the audit log CSV when done. |
@@ -425,8 +429,9 @@ transform:
 `db/engine.py` exposes `get_engine(connection_string=None)`:
 
 - **CLI path** — calls your infra library (adapt the `MSSQLClient` import).
-- **Web UI path** — pass a SQLAlchemy URL directly:
+- **Web UI path** — pass a SQLAlchemy URL directly. Both dialects are supported:
 
+**SQL Server**
 ```python
 from db.engine import get_engine
 
@@ -435,6 +440,15 @@ engine = get_engine(
     "server=localhost;database=MyDB;uid=sa;pwd=secret"
 )
 ```
+
+**PostgreSQL**
+```python
+from db.engine import get_engine
+
+engine = get_engine("postgresql+psycopg2://postgres:secret@localhost:5432/mydb")
+```
+
+The engine factory automatically passes `fast_executemany=True` only for MSSQL connections (a pyodbc-specific optimisation).
 
 ---
 
@@ -453,6 +467,28 @@ When `audit.enabled: true`, each run appends one row to `etl_audit_log` (auto-cr
 | `error_detail` | Exception message on failure |
 
 The web UI always offers an audit log CSV download after a run completes.
+
+---
+
+## PostgreSQL Destination
+
+Configure in the web UI or build the destination dict directly:
+
+```python
+{
+    "type": "postgresql",
+    "host": "localhost",
+    "port": 5432,
+    "database": "mydb",
+    "username": "postgres",
+    "password": "secret",
+    "table": "customers",
+    "schema": "public",        # default: "public"
+}
+```
+
+All four load modes (`replace`, `append`, `upsert`, `skip_existing`) work identically to SQL Server.
+The audit log table is created with PostgreSQL-compatible DDL (`SERIAL`, `TEXT`, `TIMESTAMP`, `CREATE TABLE IF NOT EXISTS`).
 
 ---
 

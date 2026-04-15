@@ -33,12 +33,35 @@ def _safe_param(col: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "_", col)
 
 
+# ── dialect helpers ───────────────────────────────────────────────────────────
+
+def _dialect(engine) -> str:
+    """Return the engine's dialect name, e.g. 'mssql' or 'postgresql'."""
+    return engine.dialect.name
+
+
+def _q(name: str, dialect: str) -> str:
+    """Quote an identifier for the target dialect."""
+    if dialect == "mssql":
+        return f"[{name}]"
+    return f'"{name}"'
+
+
+def _tbl(schema: str, table: str, dialect: str) -> str:
+    """Return a fully-qualified quoted table reference."""
+    return f"{_q(schema, dialect)}.{_q(table, dialect)}"
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _nvarchar_dtype(df: pd.DataFrame) -> dict:
-    """Map every object column to NVARCHAR(MAX) to prevent truncation."""
+def _nvarchar_dtype(df: pd.DataFrame, dialect: str = "mssql") -> dict:
+    """Map every object column to a text type to prevent truncation."""
+    if dialect == "mssql":
+        col_type = types.NVARCHAR(length=None)
+    else:
+        col_type = types.TEXT()
     return {
-        col: types.NVARCHAR(length=None)
+        col: col_type
         for col in df.columns
         if df[col].dtype == object
     }
@@ -76,7 +99,6 @@ def bulk_load(
     if df.empty:
         return {"inserted": 0, "updated": 0, "skipped": 0}
 
-    dtype = _nvarchar_dtype(df)
     bs = _batch_size(len(df.columns))
 
     def _notify(result: dict) -> dict:
@@ -86,6 +108,9 @@ def bulk_load(
             except Exception:
                 pass
         return result
+
+    dl = _dialect(engine)
+    dtype = _nvarchar_dtype(df, dl)
 
     if load_mode == "replace":
         if_exists = "replace" if chunk_index == 0 else "append"
@@ -110,7 +135,7 @@ def bulk_load(
         if not new_df.empty:
             new_df.to_sql(
                 name=table, con=engine, schema=schema,
-                if_exists="append", index=False, dtype=_nvarchar_dtype(new_df),
+                if_exists="append", index=False, dtype=_nvarchar_dtype(new_df, dl),
                 method="multi", chunksize=_batch_size(len(new_df.columns)),
             )
         logger.debug("skip_existing: %d inserted, %d skipped", len(new_df), skipped)
@@ -123,7 +148,7 @@ def bulk_load(
         if not new_df.empty:
             new_df.to_sql(
                 name=table, con=engine, schema=schema,
-                if_exists="append", index=False, dtype=_nvarchar_dtype(new_df),
+                if_exists="append", index=False, dtype=_nvarchar_dtype(new_df, dl),
                 method="multi", chunksize=_batch_size(len(new_df.columns)),
             )
 
@@ -164,6 +189,8 @@ def _get_existing_pks(
     if not primary_keys:
         return set()
 
+    dl = _dialect(engine)
+
     if len(primary_keys) == 1:
         pk_col = primary_keys[0]
         values = df[pk_col].dropna().astype(str).unique().tolist()
@@ -172,9 +199,9 @@ def _get_existing_pks(
             batch = values[i : i + _PK_BATCH]
             placeholders = ", ".join(f":v{j}" for j in range(len(batch)))
             sql = text(
-                f"SELECT [{pk_col}] "
-                f"FROM [{schema}].[{table}] "
-                f"WHERE [{pk_col}] IN ({placeholders})"
+                f"SELECT {_q(pk_col, dl)} "
+                f"FROM {_tbl(schema, table, dl)} "
+                f"WHERE {_q(pk_col, dl)} IN ({placeholders})"
             )
             params = {f"v{j}": v for j, v in enumerate(batch)}
             with engine.connect() as conn:
@@ -183,8 +210,8 @@ def _get_existing_pks(
         return existing
 
     # Composite PK: fetch all and compare in Python (safe for moderate table sizes)
-    cols_sql = ", ".join(f"[{c}]" for c in primary_keys)
-    sql = text(f"SELECT {cols_sql} FROM [{schema}].[{table}]")
+    cols_sql = ", ".join(_q(c, dl) for c in primary_keys)
+    sql = text(f"SELECT {cols_sql} FROM {_tbl(schema, table, dl)}")
     with engine.connect() as conn:
         result = conn.execute(sql)
         return {tuple(str(v) for v in row) for row in result}
@@ -256,12 +283,13 @@ def _batch_update(
     if not non_pk_cols:
         return 0
 
+    dl = _dialect(engine)
     # Use _safe_param() for bind names — column names with spaces (e.g. "Job Title")
     # would break SQLAlchemy's :name tokeniser if used literally.
-    set_clause = ", ".join(f"[{c}] = :{_safe_param(c)}" for c in non_pk_cols)
-    where_clause = " AND ".join(f"[{c}] = :{_safe_param(c)}" for c in primary_keys)
+    set_clause = ", ".join(f"{_q(c, dl)} = :{_safe_param(c)}" for c in non_pk_cols)
+    where_clause = " AND ".join(f"{_q(c, dl)} = :{_safe_param(c)}" for c in primary_keys)
     sql = text(
-        f"UPDATE [{schema}].[{table}] SET {set_clause} WHERE {where_clause}"
+        f"UPDATE {_tbl(schema, table, dl)} SET {set_clause} WHERE {where_clause}"
     )
 
     # Replace NaN with None so SQLAlchemy sends NULL; use safe param keys
@@ -297,8 +325,9 @@ def write_audit_log(
     """Ensure the audit table exists, then insert one run record."""
     _ensure_audit_table(engine, schema)
 
+    dl = _dialect(engine)
     sql = text(f"""
-        INSERT INTO [{schema}].[{AUDIT_TABLE}]
+        INSERT INTO {_tbl(schema, AUDIT_TABLE, dl)}
             (run_id, pipeline, source_file, started_at, finished_at,
              rows_read, rows_inserted, rows_updated, rows_skipped, rows_errored,
              status, error_detail)
@@ -326,24 +355,47 @@ def write_audit_log(
 
 
 def _ensure_audit_table(engine, schema: str) -> None:
-    """Create etl_audit_log if it doesn't already exist."""
-    ddl = text(f"""
-        IF OBJECT_ID(N'[{schema}].[{AUDIT_TABLE}]', N'U') IS NULL
-        CREATE TABLE [{schema}].[{AUDIT_TABLE}] (
-            id            INT IDENTITY(1,1) PRIMARY KEY,
-            run_id        NVARCHAR(36)      NOT NULL,
-            pipeline      NVARCHAR(255),
-            source_file   NVARCHAR(MAX),
-            started_at    DATETIME2,
-            finished_at   DATETIME2,
-            rows_read     INT DEFAULT 0,
-            rows_inserted INT DEFAULT 0,
-            rows_updated  INT DEFAULT 0,
-            rows_skipped  INT DEFAULT 0,
-            rows_errored  INT DEFAULT 0,
-            status        NVARCHAR(50),
-            error_detail  NVARCHAR(MAX)
-        )
-    """)
+    """Create etl_audit_log if it doesn't already exist (dialect-aware DDL)."""
+    dl = _dialect(engine)
+    tbl = _tbl(schema, AUDIT_TABLE, dl)
+
+    if dl == "mssql":
+        ddl = text(f"""
+            IF OBJECT_ID(N'{tbl}', N'U') IS NULL
+            CREATE TABLE {tbl} (
+                id            INT IDENTITY(1,1) PRIMARY KEY,
+                run_id        NVARCHAR(36)      NOT NULL,
+                pipeline      NVARCHAR(255),
+                source_file   NVARCHAR(MAX),
+                started_at    DATETIME2,
+                finished_at   DATETIME2,
+                rows_read     INT DEFAULT 0,
+                rows_inserted INT DEFAULT 0,
+                rows_updated  INT DEFAULT 0,
+                rows_skipped  INT DEFAULT 0,
+                rows_errored  INT DEFAULT 0,
+                status        NVARCHAR(50),
+                error_detail  NVARCHAR(MAX)
+            )
+        """)
+    else:
+        ddl = text(f"""
+            CREATE TABLE IF NOT EXISTS {tbl} (
+                id            SERIAL PRIMARY KEY,
+                run_id        VARCHAR(36)  NOT NULL,
+                pipeline      VARCHAR(255),
+                source_file   TEXT,
+                started_at    TIMESTAMP,
+                finished_at   TIMESTAMP,
+                rows_read     INT DEFAULT 0,
+                rows_inserted INT DEFAULT 0,
+                rows_updated  INT DEFAULT 0,
+                rows_skipped  INT DEFAULT 0,
+                rows_errored  INT DEFAULT 0,
+                status        VARCHAR(50),
+                error_detail  TEXT
+            )
+        """)
+
     with engine.begin() as conn:
         conn.execute(ddl)

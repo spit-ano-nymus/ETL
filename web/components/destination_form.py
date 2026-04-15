@@ -10,15 +10,22 @@ import streamlit as st
 from web.config import ODBC_DRIVERS
 
 
+_DEST_LABELS = {
+    "sqlserver": "SQL Server",
+    "postgresql": "PostgreSQL",
+    "s3": "AWS S3",
+}
+
+
 def render_destination_form() -> dict | None:
     """
     Render the destination radio + credential fields.
-    Returns {"type": "sqlserver"|"s3", ...credentials} or None.
+    Returns {"type": "sqlserver"|"postgresql"|"s3", ...credentials} or None.
     """
     dest_type = st.radio(
         "Destination",
-        options=["sqlserver", "s3"],
-        format_func=lambda x: "SQL Server" if x == "sqlserver" else "AWS S3",
+        options=["sqlserver", "postgresql", "s3"],
+        format_func=lambda x: _DEST_LABELS.get(x, x),
         horizontal=True,
         key="dest_type_radio",
     )
@@ -26,6 +33,8 @@ def render_destination_form() -> dict | None:
 
     if dest_type == "sqlserver":
         return _sql_server_form()
+    if dest_type == "postgresql":
+        return _postgresql_form()
     return _s3_form()
 
 
@@ -56,6 +65,34 @@ def _sql_server_form() -> dict | None:
         "trusted_connection": trusted,
         "table": table.strip(),
         "schema": schema.strip() or "dbo",
+    }
+
+
+def _postgresql_form() -> dict | None:
+    col1, col2 = st.columns(2)
+    with col1:
+        host = st.text_input("Host", key="pg_host", placeholder="localhost")
+        username = st.text_input("Username", key="pg_user", placeholder="postgres")
+        port = st.number_input("Port", key="pg_port", value=5432, min_value=1, max_value=65535)
+    with col2:
+        database = st.text_input("Database", key="pg_db", placeholder="mydb")
+        password = st.text_input("Password", key="pg_pass", type="password")
+
+    table = st.text_input("Target table name", key="pg_table", placeholder="my_table")
+    schema = st.text_input("Schema", key="pg_schema", value="public")
+
+    if not host.strip() or not database.strip() or not table.strip():
+        return None
+
+    return {
+        "type": "postgresql",
+        "host": host.strip(),
+        "port": int(port),
+        "database": database.strip(),
+        "username": username.strip(),
+        "password": password,
+        "table": table.strip(),
+        "schema": schema.strip() or "public",
     }
 
 

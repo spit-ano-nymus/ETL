@@ -26,10 +26,13 @@ def check_table_exists(table: str, schema: str, engine) -> dict | None:
         if not inspector.has_table(table, schema=schema):
             return None
         columns = [col["name"] for col in inspector.get_columns(table, schema=schema)]
+        dialect = engine.dialect.name
+        if dialect == "mssql":
+            count_sql = text(f"SELECT COUNT(*) FROM [{schema}].[{table}]")
+        else:
+            count_sql = text(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
         with engine.connect() as conn:
-            result = conn.execute(
-                text(f"SELECT COUNT(*) FROM [{schema}].[{table}]")
-            )
+            result = conn.execute(count_sql)
             row_count = result.scalar()
         return {"row_count": row_count, "columns": columns}
     except Exception as exc:
@@ -37,7 +40,27 @@ def check_table_exists(table: str, schema: str, engine) -> dict | None:
         return None
 
 
-# ── connection-string builder ─────────────────────────────────────────────────
+# ── connection-string builders ────────────────────────────────────────────────
+
+def build_postgresql_connection_string(creds: dict) -> str:
+    """
+    Build a SQLAlchemy postgresql+psycopg2 URL from the credential dict
+    that the destination form collects.
+
+    creds keys: host, port, database, username, password
+    """
+    from urllib.parse import quote_plus
+
+    host = creds.get("host", "localhost")
+    port = creds.get("port", 5432)
+    database = creds["database"]
+    username = quote_plus(creds.get("username", ""))
+    password = quote_plus(creds.get("password", ""))
+
+    if username:
+        return f"postgresql+psycopg2://{username}:{password}@{host}:{port}/{database}"
+    return f"postgresql+psycopg2://{host}:{port}/{database}"
+
 
 def build_sqlserver_connection_string(creds: dict) -> str:
     """
@@ -106,6 +129,32 @@ def get_destination_writer(job: dict) -> Callable[[pd.DataFrame, int], dict]:
             )
 
         return write_sqlserver
+
+    if dest_type == "postgresql":
+        from db.engine import get_engine
+        from db.loader import bulk_load
+
+        conn_str = build_postgresql_connection_string(dest)
+        engine = get_engine(connection_string=conn_str)
+        table = job["table_name"]
+        schema = job.get("schema_name", "public")
+        load_mode = job.get("load_mode", "append")
+        primary_keys = job.get("primary_keys", [])
+        progress_cb = _make_progress_cb(job)
+
+        def write_postgresql(df: pd.DataFrame, chunk_index: int) -> dict:
+            return bulk_load(
+                df=df,
+                table=table,
+                schema=schema,
+                engine=engine,
+                load_mode=load_mode,
+                primary_keys=primary_keys,
+                chunk_index=chunk_index,
+                progress_callback=progress_cb,
+            )
+
+        return write_postgresql
 
     if dest_type == "s3":
         from web.s3.engine import get_s3_client
