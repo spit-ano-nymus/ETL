@@ -74,7 +74,22 @@ def _run_job(
     try:
         writer = get_destination_writer(job)
 
-        for chunk in stream_file(path, chunk_size=chunk_size):
+        if source.get("mode") == "trino":
+            from web.services.trino_service import stream_trino_table
+            _stream = stream_trino_table(
+                host=source["host"],
+                port=source["port"],
+                user=source["user"],
+                catalog=source["catalog"],
+                schema=source["schema"],
+                table=source["table"],
+                chunk_size=chunk_size,
+                password=source.get("password"),
+            )
+        else:
+            _stream = stream_file(path, chunk_size=chunk_size)
+
+        for chunk in _stream:
             rows_read += len(chunk)
 
             # Apply column renames before any transform

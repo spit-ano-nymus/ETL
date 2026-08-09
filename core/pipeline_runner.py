@@ -59,7 +59,15 @@ def run_pipeline(yaml_path: str, file_override: str | None = None) -> None:
     transform_cfg = cfg.get("transform", {})
     audit_cfg = cfg.get("audit", {})
 
-    source_path = file_override or source_cfg["path"]
+    source_type = source_cfg.get("type", "file")  # "file" (default) or "trino"
+
+    if source_type == "file":
+        source_path = file_override or source_cfg["path"]
+        source_label = str(source_path)
+    else:
+        source_label = (
+            f"{source_cfg.get('catalog')}.{source_cfg.get('schema')}.{source_cfg.get('table')}"
+        )
 
     # Resolve transform steps once before streaming starts
     steps = []
@@ -83,16 +91,29 @@ def run_pipeline(yaml_path: str, file_override: str | None = None) -> None:
 
     try:
         logger.info(
-            "Pipeline '%s' started  run_id=%s  mode=%s",
-            pipeline_name, run_id, load_mode,
+            "Pipeline '%s' started  run_id=%s  source=%s  mode=%s",
+            pipeline_name, run_id, source_label, load_mode,
         )
 
-        chunk_iter = stream_csv(
-            path=source_path,
-            separator=source_cfg.get("separator", DEFAULT_SEPARATOR),
-            encoding=source_cfg.get("encoding", DEFAULT_ENCODING),
-            chunk_size=source_cfg.get("chunk_size", DEFAULT_CHUNK_SIZE),
-        )
+        if source_type == "trino":
+            from web.services.trino_service import stream_trino_table
+            chunk_iter = stream_trino_table(
+                host=source_cfg["host"],
+                port=int(source_cfg.get("port", 8080)),
+                user=source_cfg["user"],
+                catalog=source_cfg["catalog"],
+                schema=source_cfg["schema"],
+                table=source_cfg["table"],
+                chunk_size=source_cfg.get("chunk_size", DEFAULT_CHUNK_SIZE),
+                password=source_cfg.get("password"),
+            )
+        else:
+            chunk_iter = stream_csv(
+                path=source_path,
+                separator=source_cfg.get("separator", DEFAULT_SEPARATOR),
+                encoding=source_cfg.get("encoding", DEFAULT_ENCODING),
+                chunk_size=source_cfg.get("chunk_size", DEFAULT_CHUNK_SIZE),
+            )
 
         for chunk_index, chunk in enumerate(chunk_iter):
             rows_read += len(chunk)
@@ -150,7 +171,7 @@ def run_pipeline(yaml_path: str, file_override: str | None = None) -> None:
                     schema=audit_cfg.get("schema", DEFAULT_SCHEMA),
                     run_id=run_id,
                     pipeline=pipeline_name,
-                    source_file=str(source_path),
+                    source_file=source_label,
                     started_at=started_at,
                     finished_at=finished_at,
                     rows_read=rows_read,

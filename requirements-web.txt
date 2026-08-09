@@ -6,3 +6,4 @@ sqlalchemy
 pyodbc
 psycopg2-binary
 pandas
+trino

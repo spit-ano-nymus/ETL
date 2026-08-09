@@ -67,15 +67,27 @@ def _step1() -> None:
     session_id = st.session_state["etl.session_id"]
     file_source = render_file_input(session_id)
 
-    # Show column renamer as soon as a file is selected
+    # Show column renamer as soon as a source is selected
     column_renames: dict = {}
     if file_source:
         try:
-            cols = get_file_columns(file_source["path"])
+            if file_source.get("mode") == "trino":
+                from web.services.trino_service import get_trino_columns
+                cols = get_trino_columns(
+                    host=file_source["host"],
+                    port=file_source["port"],
+                    user=file_source["user"],
+                    catalog=file_source["catalog"],
+                    schema=file_source["schema"],
+                    table=file_source["table"],
+                    password=file_source.get("password"),
+                )
+            else:
+                cols = get_file_columns(file_source["path"])
             if cols:
                 column_renames = render_column_renamer(cols)
         except Exception:
-            pass  # file not readable yet — skip silently
+            pass  # source not readable yet — skip silently
 
     st.divider()
     destination = render_destination_form()
@@ -183,7 +195,20 @@ def _load_preview(job_id: str) -> None:
     for job in st.session_state["etl.batch_queue"]:
         if job["job_id"] == job_id:
             try:
-                df = sample_rows(job["file_source"]["path"])
+                src = job["file_source"]
+                if src.get("mode") == "trino":
+                    from web.services.trino_service import sample_trino_rows
+                    df = sample_trino_rows(
+                        host=src["host"],
+                        port=src["port"],
+                        user=src["user"],
+                        catalog=src["catalog"],
+                        schema=src["schema"],
+                        table=src["table"],
+                        password=src.get("password"),
+                    )
+                else:
+                    df = sample_rows(src["path"])
                 job["preview_df"] = df
                 job["stats"]["column_stats"] = compute_column_stats(df).to_dict("records")
                 job["status"] = "previewing"

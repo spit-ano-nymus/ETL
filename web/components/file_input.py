@@ -1,8 +1,13 @@
 """
 file_input.py
 -------------
-Renders the file input widget (server path tab OR upload tab).
-Returns a dict: {"mode": "path"|"upload", "path": str} or None if incomplete.
+Renders the input-source selector.
+Returns a dict describing the chosen source, or None if not yet configured.
+
+Source dict shapes:
+  {"mode": "path",   "path": str}
+  {"mode": "upload", "path": str}
+  {"mode": "trino",  "host", "port", "user", "password", "catalog", "schema", "table", "path"}
 """
 from __future__ import annotations
 
@@ -10,16 +15,16 @@ import streamlit as st
 
 
 def render_file_input(session_id: str) -> dict | None:
-    """
-    Render two tabs:
-      - Tab 1: path on server
-      - Tab 2: file upload (streamed to /tmp)
+    source_type = st.radio(
+        "Input source",
+        ["Path on server", "Upload file", "Trino"],
+        key="file_input_source_type",
+        horizontal=True,
+    )
 
-    Returns a source dict or None if the user hasn't filled in the required field.
-    """
-    tab_path, tab_upload = st.tabs(["Path on server", "Upload file"])
+    st.divider()
 
-    with tab_path:
+    if source_type == "Path on server":
         path_val = st.text_input(
             "File path",
             key="file_input_path",
@@ -29,8 +34,8 @@ def render_file_input(session_id: str) -> dict | None:
         if path_val.strip():
             return {"mode": "path", "path": path_val.strip()}
 
-    with tab_upload:
-        st.caption("Files ≤ 200 MB recommended for upload. Larger files: use 'Path on server'.")
+    elif source_type == "Upload file":
+        st.caption("Files ≤ 200 MB recommended. Larger files: use 'Path on server'.")
         uploaded = st.file_uploader(
             "Upload CSV or Excel",
             type=["csv", "xlsx", "xls"],
@@ -41,5 +46,9 @@ def render_file_input(session_id: str) -> dict | None:
             saved_path = save_upload(uploaded, session_id)
             st.success(f"Saved to: `{saved_path}`")
             return {"mode": "upload", "path": saved_path}
+
+    elif source_type == "Trino":
+        from web.components.trino_input import render_trino_input
+        return render_trino_input()
 
     return None

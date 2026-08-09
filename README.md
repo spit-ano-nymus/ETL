@@ -11,6 +11,7 @@ A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server, Po
 - **Four load modes** — `replace`, `append`, `upsert`, `skip_existing`
 - **Transform pipeline** — cleaning, validation, and parsing steps via a plug-in registry
 - **Multi-database support** — writes to SQL Server (pyodbc), PostgreSQL (psycopg2), or AWS S3
+- **Trino input** — read any Trino-accessible table (Hive, Iceberg, Delta Lake, etc.) as a streaming source in both the web UI and YAML pipelines
 - **Audit log** — every run writes a row to `etl_audit_log` (auto-created, dialect-aware DDL)
 - **Web UI** — Streamlit front-end for point-and-click ETL without touching YAML or a terminal
 - **S3 destination** — writes Parquet chunks to AWS S3 via boto3
@@ -50,7 +51,8 @@ ETL/
     ├── app.py                      # Streamlit entry point (4-step UI)
     ├── config.py                   # Session state initialisation
     ├── components/
-    │   ├── file_input.py           # Path / upload tabs
+    │   ├── file_input.py           # Path / upload / Trino source selector
+    │   ├── trino_input.py          # Trino connection form + cascading dropdowns
     │   ├── destination_form.py     # SQL Server / PostgreSQL / S3 credential forms
     │   ├── action_selector.py      # Action checkboxes from registry
     │   ├── batch_queue.py          # Queued jobs table
@@ -59,6 +61,7 @@ ETL/
     │   └── sql_window.py           # SQL scratch pad (draft only)
     ├── services/
     │   ├── file_service.py         # Path validation, sampling, Excel chunking
+    │   ├── trino_service.py        # Trino connection, listing, streaming helpers
     │   ├── pipeline_service.py     # Background worker thread
     │   ├── destination_service.py  # Writer factory, table existence check
     │   ├── transform_service.py    # apply_selected_transforms() via registry
@@ -158,7 +161,7 @@ The UI walks through four steps:
 
 | Step | What happens |
 |------|-------------|
-| **1 — Input & Destination** | Choose a file (server path or upload) and configure the SQL Server, PostgreSQL, or S3 destination. Add multiple files to a batch queue. |
+| **1 — Input & Destination** | Choose an input source (server path, file upload, or Trino table) and configure the SQL Server, PostgreSQL, or S3 destination. Add multiple sources to a batch queue. |
 | **2 — Actions & Batch Review** | Select transform actions (cleaning, validation, parsing, mining). Review the queue. |
 | **3 — Review** | Preview the first 1 000 rows. If the target table already exists, choose a load mode. View column statistics. Draft a SQL query (not executed). |
 | **4 — Upload & Progress** | Jobs run sequentially. Live progress bars update every 300 ms. Download the audit log CSV when done. |
@@ -513,6 +516,100 @@ Each chunk is written as a Parquet file: `etl-output/customers/part-00000.parque
 
 ---
 
+## Trino Input
+
+ETL Studio can read any table accessible via a Trino cluster — Hive, Iceberg, Delta Lake, TPCH, or any other Trino connector — and stream it into any supported destination.
+
+### Installation
+
+The Trino Python driver is included in `requirements-web.txt`. To install it standalone:
+
+```bash
+pip install trino
+```
+
+---
+
+### Web UI
+
+1. In **Step 1 — Input & Destination**, select the **Trino** radio button under "Input source".
+2. Fill in your cluster details:
+
+   | Field | Description |
+   |-------|-------------|
+   | **Trino host** | Hostname or IP of the Trino coordinator (e.g. `trino.example.com`) |
+   | **Port** | HTTP port, default `8080` (use `443` for HTTPS clusters) |
+   | **User** | Trino username |
+   | **Password** | Optional. Leave blank for clusters without authentication. |
+
+3. Click **Connect**. ETL Studio verifies the connection and populates the **Catalog** dropdown.
+4. Select a **Catalog** — the Schema dropdown loads automatically.
+5. Select a **Schema** (database) — the Table dropdown loads automatically.
+6. Select a **Table** — the source is confirmed and the column renamer appears.
+7. Continue through Steps 2–4 exactly as you would with a file source. Trino data is streamed in chunks of 10 000 rows so large tables never exhaust RAM.
+
+> **Tip:** Column renames, all transform actions (cleaning, validation, parsing), and all load modes work identically with Trino as the source.
+
+---
+
+### YAML Pipeline (CLI)
+
+Add `type: trino` to your `source` block. File-based pipelines that omit `type` continue to work unchanged.
+
+```yaml
+pipeline:
+  name: hive_customers_import
+
+source:
+  type: trino               # "file" is the default; omit for file-based pipelines
+  host: trino.example.com
+  port: 8080                # default 8080
+  user: admin
+  password: secret          # optional; omit for unauthenticated clusters
+  catalog: hive
+  schema: sales
+  table: customers
+  chunk_size: 10000         # optional; default 10000
+
+destination:
+  table: customers
+  schema: dbo
+  load_mode: upsert
+  primary_keys: [customer_id]
+
+transform:
+  steps:
+    - trim_whitespace
+    - normalize_nulls
+    - name: validate_required
+      params:
+        columns: [customer_id, email]
+
+audit:
+  enabled: true
+  schema: dbo
+```
+
+Run it with:
+
+```bash
+python main.py --pipeline config/pipeline.yaml
+```
+
+The `--file` override flag is ignored for Trino sources. The audit log records the source as `catalog.schema.table`.
+
+---
+
+### Authentication
+
+| Cluster type | Configuration |
+|---|---|
+| No authentication | Omit `password` (or leave it blank in the UI) |
+| Basic auth (username + password) | Set `password` in YAML / UI — uses `trino.auth.BasicAuthentication` |
+| Other auth (JWT, OAuth2, Kerberos) | Not currently supported via the UI/YAML; extend `_connect()` in `web/services/trino_service.py` |
+
+---
+
 ## Large File Handling
 
 | Input method | RAM behaviour |
@@ -520,6 +617,7 @@ Each chunk is written as a Parquet file: `etl-output/customers/part-00000.parque
 | Server path (CSV) | `stream_csv()` yields one chunk at a time — full file never in RAM |
 | Server path (Excel) | `_stream_excel()` reads with `skiprows`/`nrows` — full file never in RAM |
 | Upload | Streamed to `/tmp/etl_uploads/<session_id>/`, then treated as a server path |
+| Trino | `cursor.fetchmany(chunk_size)` loop — result set never fully buffered |
 | Preview | Reads only the first 1 000 rows |
 
 Peak RAM usage = one chunk (default 10 000 rows) regardless of file size.
