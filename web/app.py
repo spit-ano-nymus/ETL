@@ -67,7 +67,7 @@ def _step1() -> None:
     session_id = st.session_state["etl.session_id"]
     file_source = render_file_input(session_id)
 
-    # Show column renamer as soon as a source is selected
+    # Show column renamer + inline data glimpse as soon as a source is selected
     column_renames: dict = {}
     if file_source:
         try:
@@ -88,6 +88,33 @@ def _step1() -> None:
                 column_renames = render_column_renamer(cols)
         except Exception:
             pass  # source not readable yet — skip silently
+
+        # Inline preview — fetch once per unique source, cache in session state
+        _preview_key = f"etl.step1_preview.{file_source['path']}"
+        if _preview_key not in st.session_state:
+            try:
+                if file_source.get("mode") == "trino":
+                    from web.services.trino_service import sample_trino_rows
+                    st.session_state[_preview_key] = sample_trino_rows(
+                        host=file_source["host"],
+                        port=file_source["port"],
+                        user=file_source["user"],
+                        catalog=file_source["catalog"],
+                        schema=file_source["schema"],
+                        table=file_source["table"],
+                        n=5,
+                        password=file_source.get("password"),
+                    )
+                else:
+                    from web.services.file_service import sample_rows
+                    st.session_state[_preview_key] = sample_rows(file_source["path"], n=5)
+            except Exception:
+                st.session_state[_preview_key] = None
+
+        _glimpse = st.session_state.get(_preview_key)
+        if _glimpse is not None and not _glimpse.empty:
+            with st.expander(f"Data preview — first 5 rows ({len(_glimpse.columns)} columns)", expanded=True):
+                st.dataframe(_glimpse, use_container_width=True, hide_index=True)
 
     st.divider()
     destination = render_destination_form()
