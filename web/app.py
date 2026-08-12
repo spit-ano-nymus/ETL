@@ -92,18 +92,43 @@ def _step1() -> None:
     st.divider()
     destination = render_destination_form()
 
-    if destination and destination.get("type") == "sqlserver":
+    _SQL_DEST_TYPES = ("sqlserver", "postgresql")
+    if destination and destination.get("type") in _SQL_DEST_TYPES:
         load_mode = st.selectbox(
             "Load mode",
             LOAD_MODES,
             key="step1_load_mode",
-            help="replace = DROP+recreate | append = always insert | upsert = insert+update | skip_existing = ignore existing PKs",
+            help=(
+                "replace = DROP+recreate table | "
+                "append = always insert | "
+                "upsert = insert new rows + UPDATE changed rows | "
+                "skip_existing = insert only rows whose PK is not already in the table"
+            ),
         )
         primary_keys_raw = st.text_input(
-            "Primary key column(s) (comma-separated, required for upsert/skip)",
+            "Primary key column(s) (comma-separated, required for upsert / skip_existing)",
             key="step1_pks",
             placeholder="id  or  id,date",
         )
+        if load_mode == "skip_existing":
+            st.info(
+                "**Weekly update?** `skip_existing` is the right mode: "
+                "rows already in the target table are ignored; only new rows are inserted. "
+                "Make sure to set the primary key above."
+            )
+        elif load_mode == "upsert":
+            st.info(
+                "**`upsert`** inserts new rows AND updates existing rows that share the same primary key. "
+                "Use this if existing rows may also change between updates."
+            )
+    elif destination and destination.get("type") == "s3":
+        load_mode = st.selectbox(
+            "Load mode",
+            ["append", "replace"],
+            key="step1_load_mode",
+            help="append = add Parquet chunks to the prefix | replace = delete all existing objects first",
+        )
+        primary_keys_raw = ""
     else:
         load_mode = "append"
         primary_keys_raw = ""
