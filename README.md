@@ -418,12 +418,20 @@ transform:
 
 ## Load Modes
 
-| Mode | Behaviour |
-|------|-----------|
-| `replace` | Drop and recreate the table on the first chunk; append subsequent chunks |
-| `append` | Always insert; create the table if it does not exist |
-| `upsert` | Insert new rows; UPDATE existing rows matched on `primary_keys` |
-| `skip_existing` | Insert only rows whose `primary_keys` are not already in the table |
+All four modes are available for **SQL Server** and **PostgreSQL** destinations. S3 supports `append` and `replace` only (upsert and skip_existing require a database engine).
+
+| Mode | Behaviour | Primary key required |
+|------|-----------|:-------------------:|
+| `replace` | Drop and recreate the table on the first chunk; append subsequent chunks | No |
+| `append` | Always insert; create the table if it does not exist | No |
+| `upsert` | Insert new rows; UPDATE existing rows matched on `primary_keys` | Yes |
+| `skip_existing` | Insert only rows whose `primary_keys` are not already in the table | Yes |
+
+### Weekly table updates
+
+If you receive a table every week that contains **all previous rows plus new additions**, use **`skip_existing`** with your primary key column(s). The full table is loaded each time; rows already present in the destination are silently skipped and only the new rows are inserted.
+
+Use **`upsert`** instead if existing rows may also change between deliveries — it inserts new rows and updates changed ones in a single pass.
 
 ---
 
