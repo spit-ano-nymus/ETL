@@ -69,6 +69,7 @@ def _step1() -> None:
 
     # Show column renamer + inline data glimpse as soon as a source is selected
     column_renames: dict = {}
+    column_drops: list = []
     if file_source:
         try:
             if file_source.get("mode") == "trino":
@@ -85,7 +86,12 @@ def _step1() -> None:
             else:
                 cols = get_file_columns(file_source["path"])
             if cols:
-                column_renames = render_column_renamer(cols)
+                table_key = (
+                    file_source.get("table", "")
+                    if file_source.get("mode") == "trino"
+                    else os.path.splitext(os.path.basename(file_source.get("path", "")))[0]
+                )
+                column_renames, column_drops = render_column_renamer(cols, table_key)
         except Exception:
             pass  # source not readable yet — skip silently
 
@@ -182,6 +188,7 @@ def _step1() -> None:
                     "schema_name": schema_name,
                     "primary_keys": pks,
                     "column_renames": column_renames,
+                    "column_drops": column_drops,
                     "status": "pending",
                     "preview_df": None,
                     "stats": {},

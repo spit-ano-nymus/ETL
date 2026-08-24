@@ -1,22 +1,46 @@
 """
 column_aliases.py
 -----------------
-Programmer-defined column rename defaults.
+Per-table column rename defaults, keyed by source table/file name.
 
-Add entries here to pre-populate the "Rename columns" UI in Step 1.
-Keys   = original column name as it appears in the source file.
-Values = the new name to use in the destination table.
+Add a "_default" block for aliases that should apply to every source; add
+a block per specific source (Trino table name, or the file name without
+extension) for aliases that only apply to that one source. A per-table
+entry overrides a "_default" entry for the same column name.
 
 Example:
     COLUMN_ALIASES = {
-        "bra_code":   "Branch ID",
-        "cust_no":    "Customer Number",
-        "txn_dt":     "Transaction Date",
+        "_default": {
+            "cust_no": "customer_id",   # applies everywhere unless overridden below
+        },
+        "trans": {                       # Trino table "trans"
+            "ops_id": "operationid",
+            "txn_dt": "transaction_date",
+        },
+        "sales_weekly": {                # file "sales_weekly.csv" (extension stripped)
+            "amt": "amount",
+        },
     }
 
-Leave COLUMN_ALIASES empty if you prefer to do all renaming through the UI.
+Leave a table's block empty (or omit it) if you prefer to do that table's
+renaming through the UI each time.
 """
 
-COLUMN_ALIASES: dict[str, str] = {
-    # "original_name": "new_name",
+COLUMN_ALIASES: dict[str, dict[str, str]] = {
+    "_default": {
+        # "original_name": "new_name",
+    },
+    # "trans": {
+    #     "ops_id": "operationid",
+    # },
 }
+
+
+def aliases_for(table_key: str) -> dict[str, str]:
+    """
+    Merge "_default" aliases with the table-specific block for `table_key`.
+    Table-specific entries win over "_default" for the same column.
+    """
+    merged = dict(COLUMN_ALIASES.get("_default", {}))
+    merged.update(COLUMN_ALIASES.get(table_key, {}))
+    return merged

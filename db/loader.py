@@ -3,7 +3,8 @@ loader.py
 ---------
 Bulk-load DataFrames into SQL Server with four load modes:
 
-  replace        – DROP + recreate on first chunk, append after
+  replace        – TRUNCATE (view-safe) on first chunk if table exists,
+                   else create; append after
   append         – always append (create if missing)
   skip_existing  – INSERT only rows whose PKs don't already exist
   upsert         – INSERT new rows + UPDATE existing rows
@@ -16,7 +17,7 @@ import re
 from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import text, types
+from sqlalchemy import text, types, inspect
 
 from core.consts import AUDIT_TABLE, DEFAULT_SCHEMA, MAX_SQL_PARAMS
 
@@ -50,6 +51,11 @@ def _q(name: str, dialect: str) -> str:
 def _tbl(schema: str, table: str, dialect: str) -> str:
     """Return a fully-qualified quoted table reference."""
     return f"{_q(schema, dialect)}.{_q(table, dialect)}"
+
+
+def _table_exists(engine, schema: str, table: str) -> bool:
+    """Return True if `table` already exists in `schema`."""
+    return inspect(engine).has_table(table, schema=schema)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -113,7 +119,18 @@ def bulk_load(
     dtype = _nvarchar_dtype(df, dl)
 
     if load_mode == "replace":
-        if_exists = "replace" if chunk_index == 0 else "append"
+        if chunk_index == 0:
+            if _table_exists(engine, schema, table):
+                # TRUNCATE instead of DROP+CREATE so dependent views (or any
+                # other object) never get invalidated — only the row data
+                # changes, the table itself stays intact.
+                with engine.begin() as conn:
+                    conn.execute(text(f"TRUNCATE TABLE {_tbl(schema, table, dl)}"))
+                if_exists = "append"
+            else:
+                if_exists = "replace"
+        else:
+            if_exists = "append"
         df.to_sql(
             name=table, con=engine, schema=schema,
             if_exists=if_exists, index=False, dtype=dtype,
