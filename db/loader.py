@@ -105,6 +105,23 @@ def bulk_load(
     if df.empty:
         return {"inserted": 0, "updated": 0, "skipped": 0}
 
+    logger.info(
+        "bulk_load: chunk=%d mode=%s table=%s.%s primary_keys=%r columns=%r",
+        chunk_index, load_mode, schema, table, primary_keys, list(df.columns),
+    )
+
+    if load_mode in ("upsert", "skip_existing") and primary_keys:
+        missing = [pk for pk in primary_keys if pk not in df.columns]
+        if missing:
+            logger.error(
+                "bulk_load: primary key(s) %r not found — available columns: %r",
+                missing, list(df.columns),
+            )
+            raise ValueError(
+                f"Primary key column(s) {missing} not found in the data. "
+                f"Available columns: {list(df.columns)}"
+            )
+
     bs = _batch_size(len(df.columns))
 
     def _notify(result: dict) -> dict:
@@ -207,6 +224,10 @@ def _get_existing_pks(
         return set()
 
     dl = _dialect(engine)
+    logger.info(
+        "_get_existing_pks: table=%s.%s primary_keys=%r dialect=%s",
+        schema, table, primary_keys, dl,
+    )
 
     if len(primary_keys) == 1:
         pk_col = primary_keys[0]
@@ -224,6 +245,10 @@ def _get_existing_pks(
             with engine.connect() as conn:
                 result = conn.execute(sql, params)
                 existing.update(str(row[0]) for row in result)
+        logger.info(
+            "_get_existing_pks: found %d existing PK(s) out of %d unique value(s)",
+            len(existing), len(values),
+        )
         return existing
 
     # Composite PK: fetch all and compare in Python (safe for moderate table sizes)
@@ -231,7 +256,9 @@ def _get_existing_pks(
     sql = text(f"SELECT {cols_sql} FROM {_tbl(schema, table, dl)}")
     with engine.connect() as conn:
         result = conn.execute(sql)
-        return {tuple(str(v) for v in row) for row in result}
+        existing = {tuple(str(v) for v in row) for row in result}
+    logger.info("_get_existing_pks: fetched %d existing composite PK(s) from table", len(existing))
+    return existing
 
 
 def _pk_series(df: pd.DataFrame, primary_keys: list[str]):
@@ -251,13 +278,22 @@ def _filter_new(
     """Return only rows whose PKs do not exist in the target table."""
     try:
         existing = _get_existing_pks(df, table, schema, engine, primary_keys)
-    except Exception:
+    except Exception as exc:
+        logger.info(
+            "_filter_new: table %s.%s not queryable yet (%s) — treating all %d row(s) as new",
+            schema, table, exc, len(df),
+        )
         return df  # table likely doesn't exist yet — all rows are new
 
     if not existing:
         return df
 
-    return df[~_pk_series(df, primary_keys).isin(existing)]
+    new_df = df[~_pk_series(df, primary_keys).isin(existing)]
+    logger.info(
+        "_filter_new: %d new row(s), %d already existing (skipped)",
+        len(new_df), len(df) - len(new_df),
+    )
+    return new_df
 
 
 def _split_new_existing(
@@ -270,7 +306,11 @@ def _split_new_existing(
     """Split df into (new_rows, existing_rows, table_existed) based on PK presence."""
     try:
         existing = _get_existing_pks(df, table, schema, engine, primary_keys)
-    except Exception:
+    except Exception as exc:
+        logger.info(
+            "_split_new_existing: table %s.%s not queryable yet (%s) — treating all %d row(s) as new",
+            schema, table, exc, len(df),
+        )
         return df, pd.DataFrame(columns=df.columns), False  # table doesn't exist yet
 
     table_existed = True  # _get_existing_pks succeeded → table exists
@@ -278,7 +318,12 @@ def _split_new_existing(
         return df, pd.DataFrame(columns=df.columns), table_existed
 
     existing_mask = _pk_series(df, primary_keys).isin(existing)
-    return df[~existing_mask].copy(), df[existing_mask].copy(), table_existed
+    new_df, existing_df = df[~existing_mask].copy(), df[existing_mask].copy()
+    logger.info(
+        "_split_new_existing: %d new row(s), %d existing row(s) to update",
+        len(new_df), len(existing_df),
+    )
+    return new_df, existing_df, table_existed
 
 
 def _extract_row_sample(df: pd.DataFrame) -> list[dict]:
@@ -298,9 +343,14 @@ def _batch_update(
     """UPDATE existing rows via executemany. Returns number of rows updated."""
     non_pk_cols = [c for c in df.columns if c not in primary_keys]
     if not non_pk_cols:
+        logger.info("_batch_update: no non-PK columns to update — skipping")
         return 0
 
     dl = _dialect(engine)
+    logger.info(
+        "_batch_update: table=%s.%s rows=%d primary_keys=%r non_pk_cols=%r",
+        schema, table, len(df), primary_keys, non_pk_cols,
+    )
     # Use _safe_param() for bind names — column names with spaces (e.g. "Job Title")
     # would break SQLAlchemy's :name tokeniser if used literally.
     set_clause = ", ".join(f"{_q(c, dl)} = :{_safe_param(c)}" for c in non_pk_cols)
@@ -318,6 +368,7 @@ def _batch_update(
     with engine.begin() as conn:
         conn.execute(sql, records)
 
+    logger.info("_batch_update: updated %d row(s)", len(df))
     return len(df)
 
 

@@ -20,7 +20,12 @@ import uuid
 
 import streamlit as st
 
+from utils.logging_utils import configure_logging
 from web.config import init_session_state, STEPS, LOAD_MODES
+
+# Web UI never called this before — without it, every logger.info/debug call
+# anywhere in the app (including db/loader.py) is silently dropped.
+configure_logging("INFO")
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
