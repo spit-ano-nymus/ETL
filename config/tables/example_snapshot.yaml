@@ -1,0 +1,32 @@
+# =============================================================================
+# One-click pipeline — one table per file.
+#
+#   python main.py --pipeline config/tables/example_snapshot.yaml
+#
+# This file says only WHERE to read and HOW to connect. Everything about the
+# table itself (snapshot or not, record key, supplier columns to drop, column
+# names in Hebrew, types, rows to leave out) lives in Postgres:
+#   meta.etl_tables      one row per table   (table_key below must exist there)
+#   meta.etl_column_map  the mapper
+# =============================================================================
+
+pipeline:
+  table_key: customers            # the row in meta.etl_tables
+
+source:
+  type: trino                     # trino | file
+  host: trino.internal
+  port: 8080
+  user: etl_user
+  password_env: TRINO_PASSWORD    # optional; read from an environment variable
+  catalog: hive
+  schema: supplier
+  table: customers
+  chunk_size: 10000
+
+postgres:
+  host: pg.internal
+  port: 5432
+  database: data
+  user: etl_user
+  password_env: PG_PASSWORD       # the password is read from this environment variable

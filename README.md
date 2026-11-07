@@ -5,6 +5,38 @@ A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server, Po
 
 ---
 
+## One-click pipeline (staging → public → analyst)
+
+One command per table moves a full supplier fetch (Trino or CSV) through three schemas:
+
+| Schema | Purpose | Who uses it |
+|---|---|---|
+| `staging` | The fetch exactly as it arrived; replaced every run | nobody (technical) |
+| `public` | Clean raw: no duplicates, no supplier extra columns, original names, all text | data team |
+| `analyst` (per table) | Hebrew names, real types, unwanted rows removed; snapshot tables keep all versions | analysts |
+
+```
+python main.py --pipeline config/tables/<table>.yaml               # full run
+python main.py --pipeline config/tables/<table>.yaml --file X.csv  # other file, same table
+python main.py --pipeline config/tables/<table>.yaml --final-only  # rebuild analyst table only
+python main.py --pipeline config/tables/<table>.yaml --setup-only  # apply sql/ files only
+```
+
+- **Table rules live in Postgres, not in code** — `meta.etl_tables` (snapshot / insert_only, record key, fetch-time column, supplier columns to drop, target schema/table, rows to exclude) and `meta.etl_column_map` (the mapper: original name → Hebrew name, type, date format, reason). This is the single source of truth for renames.
+- **The YAML holds only source + connection** — see `config/tables/example_*.yaml`.
+- **SQL is applied automatically** — every run first executes new/changed files in `sql/` and records them in `meta.schema_migrations`.
+- **Every run is logged** in `meta.etl_runs`.
+
+| File | What it does |
+|---|---|
+| `sql/001_meta_schema.sql` | Config tables, mapper, run log, migrations log |
+| `sql/002_load_raw.sql` | `meta.load_raw(table_key)` — staging → public, dedup by row hash |
+| `sql/003_build_final.sql` | `meta.build_final(table_key)` — public → analyst via the mapper |
+| `core/table_pipeline.py` | The runner: fetch → staging (COPY), then steps 2+3 in one transaction |
+| `db/migrations.py` | Applies `sql/` files |
+
+---
+
 ## Features
 
 - **Chunked streaming** — processes files of any size (1.5 GB+) with constant RAM usage (one 10 000-row chunk at a time)

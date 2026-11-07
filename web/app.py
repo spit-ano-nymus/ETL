@@ -66,40 +66,13 @@ def _step1() -> None:
     from web.components.file_input import render_file_input
     from web.components.destination_form import render_destination_form
 
-    from web.components.column_renamer import render_column_renamer
-    from web.services.file_service import get_file_columns
-
     session_id = st.session_state["etl.session_id"]
     file_source = render_file_input(session_id)
 
-    # Show column renamer + inline data glimpse as soon as a source is selected
-    column_renames: dict = {}
-    column_drops: list = []
+    # Column renames / drops are no longer set here: the single source of truth
+    # is the mapper in Postgres (meta.etl_column_map / meta.etl_tables), used by
+    # the one-click YAML pipeline (python main.py --pipeline config/tables/...).
     if file_source:
-        try:
-            if file_source.get("mode") == "trino":
-                from web.services.trino_service import get_trino_columns
-                cols = get_trino_columns(
-                    host=file_source["host"],
-                    port=file_source["port"],
-                    user=file_source["user"],
-                    catalog=file_source["catalog"],
-                    schema=file_source["schema"],
-                    table=file_source["table"],
-                    password=file_source.get("password"),
-                )
-            else:
-                cols = get_file_columns(file_source["path"])
-            if cols:
-                table_key = (
-                    file_source.get("table", "")
-                    if file_source.get("mode") == "trino"
-                    else os.path.splitext(os.path.basename(file_source.get("path", "")))[0]
-                )
-                column_renames, column_drops = render_column_renamer(cols, table_key)
-        except Exception:
-            pass  # source not readable yet — skip silently
-
         # Inline preview — fetch once per unique source, cache in session state
         _preview_key = f"etl.step1_preview.{file_source['path']}"
         if _preview_key not in st.session_state:
@@ -192,8 +165,6 @@ def _step1() -> None:
                     "table_name": table_name,
                     "schema_name": schema_name,
                     "primary_keys": pks,
-                    "column_renames": column_renames,
-                    "column_drops": column_drops,
                     "status": "pending",
                     "preview_df": None,
                     "stats": {},
