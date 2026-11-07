@@ -1,0 +1,28 @@
+# =============================================================================
+# Local test of the one-click pipeline with a small `customer` table.
+# Run from the project root (the folder that has main.py):
+#
+#   python main.py --pipeline tests/local/customer_local.yaml --setup-only
+#   (then run tests/local/setup_customer.sql in pgAdmin)
+#   python main.py --pipeline tests/local/customer_local.yaml --file tests/local/customer_jan.csv
+#   python main.py --pipeline tests/local/customer_local.yaml --file tests/local/customer_mar.csv
+#   python main.py --pipeline tests/local/customer_local.yaml --file tests/local/customer_jun.csv
+#
+# Expected results after each run: tests/local/check_customer.sql
+# =============================================================================
+
+pipeline:
+  table_key: customer
+
+source:
+  type: file
+  path: tests/local/customer_jan.csv
+  separator: ","
+  encoding: utf-8-sig
+
+postgres:
+  host: localhost
+  port: 5432
+  database: etl_test
+  user: postgres
+  password_env: PG_PASSWORD       # set it in the terminal before running (see the steps)
