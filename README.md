@@ -7,33 +7,155 @@ A YAML-driven ETL pipeline for streaming CSV and Excel files into SQL Server, Po
 
 ## One-click pipeline (staging → public → analyst)
 
-One command per table moves a full supplier fetch (Trino or CSV) through three schemas:
+One command per table moves a full supplier fetch (Trino or CSV) through three schemas, each with its own job:
 
-| Schema | Purpose | Who uses it |
+| Schema | What it holds | Who uses it |
 |---|---|---|
-| `staging` | The fetch exactly as it arrived; replaced every run | nobody (technical) |
-| `public` | Clean raw: no duplicates, no supplier extra columns, original names, all text | data team |
-| `analyst` (per table) | Hebrew names, real types, unwanted rows removed; snapshot tables keep all versions | analysts |
+| `staging` | The fetch exactly as it arrived, all text, no key. Rebuilt every run. | nobody (technical) |
+| `public` | Clean raw: no duplicates, no supplier extra columns, **original column names**, all text. The data team's hermetic working area. | data team |
+| `analyst` (any schema you set per table) | Hebrew column names, real types (dates, numbers), unwanted rows removed. Snapshot tables keep every version. | analysts |
 
 ```
-python main.py --pipeline config/tables/<table>.yaml               # full run
-python main.py --pipeline config/tables/<table>.yaml --file X.csv  # other file, same table
-python main.py --pipeline config/tables/<table>.yaml --final-only  # rebuild analyst table only
-python main.py --pipeline config/tables/<table>.yaml --setup-only  # apply sql/ files only
+supplier ──► staging ──► public ──► analyst
+            step 1      step 2     step 3
 ```
 
-- **Table rules live in Postgres, not in code** — `meta.etl_tables` (snapshot / insert_only, record key, fetch-time column, supplier columns to drop, target schema/table, rows to exclude) and `meta.etl_column_map` (the mapper: original name → Hebrew name, type, date format, reason). This is the single source of truth for renames.
-- **The YAML holds only source + connection** — see `config/tables/example_*.yaml`.
-- **SQL is applied automatically** — every run first executes new/changed files in `sql/` and records them in `meta.schema_migrations`.
-- **Every run is logged** in `meta.etl_runs`.
+### Where things live
 
-| File | What it does |
+| What | Where | Edited by |
+|---|---|---|
+| Table rules: snapshot or not, record key, fetch-time column, supplier columns to drop, target schema/table, rows to exclude | Postgres: `meta.etl_tables` | you, in pgAdmin (SQL `INSERT` / `UPDATE`) |
+| The mapper: original name → Hebrew name, type, date format, reason | Postgres: `meta.etl_column_map` | you, in pgAdmin |
+| Where to read from and how to connect | `config/tables/<table>.yaml` (one file per table) | you, in PyCharm |
+| The logic | `sql/*.sql` and the Python code | git |
+
+The mapper in Postgres is the **only** place renames are defined. (The old `consts/column_aliases.py` and the Streamlit rename screen were removed.)
+
+### What a run does
+
+| Step | What happens | Code |
+|---|---|---|
+| 0 · setup | Runs every file in `sql/` that is new or changed since it last ran, and records it (with its full content) in `meta.schema_migrations`. Nobody pastes SQL into pgAdmin. | `db/migrations.py` |
+| 1 · fetch | Streams the source into `staging.<raw_table>` with `COPY`. All values text; `NULL` and empty string stay different. | `core/table_pipeline.py` |
+| 2 · raw | `meta.load_raw(table_key)`: ignores the supplier's extra columns, hashes every remaining column except the fetch time, and inserts only what is new (see below). Creates the raw table on the first run and adds new source columns automatically. | `sql/002_load_raw.sql` |
+| 3 · final | `meta.build_final(table_key)`: rebuilds the analyst table from raw: renames and converts by the mapper, drops rows matching `exclude_where`. A value that cannot be converted (e.g. `31/02/2020` as a date) becomes NULL and is counted, it does not fail the run. | `sql/003_build_final.sql` |
+
+Steps 2 and 3 run in **one transaction**: if step 3 fails, step 2 is undone too, so `public` and `analyst` never disagree. Every run is logged in `meta.etl_runs`.
+
+### The two table types
+
+| | `snapshot` | `insert_only` |
+|---|---|---|
+| Supplier sends | the full table every time, including unchanged records | rows that never change, some already sent before |
+| Step 2 inserts into `public` | a record that is new, or whose values differ from **its latest version** (a record that changes back to an old value also gets a new version) | a row only if no identical row exists; it keeps the fetch time of its **first** appearance |
+| Step 3 in `analyst` | every version, plus `מספר_גרסה` (1 = first) and `גרסה_אחרונה` (true on the latest) | every row |
+| Needs `business_key` | yes | no — "duplicate" means all columns equal (except fetch time) |
+
+Raw tables get two technical columns: `_row_hash` (md5 of the compared columns) and `_raw_id` (insertion order; also the raw table's primary key). Original columns are never changed.
+
+### First-time setup (once per database)
+
+1. **Install the Python packages** in the closed environment: `pip install -r requirements.txt` (needs `psycopg2-binary`; `trino` for Trino sources).
+2. **Write a YAML for the table** — copy `config/tables/example_snapshot.yaml` (Trino) or `example_weekly_file.yaml` (CSV) and fill in the source and the Postgres connection. Put the password in an environment variable and name it in `password_env`.
+3. **Create the `meta` tables and functions** in Postgres:
+   ```
+   python main.py --pipeline config/tables/customers.yaml --setup-only
+   ```
+   This only applies the `sql/` files; no data moves. It is needed once, because step 4 writes into `meta.etl_tables`, which does not exist until this runs. (Any normal run also does it automatically.)
+4. **Describe the table** in pgAdmin:
+   ```sql
+   INSERT INTO meta.etl_tables
+       (table_key, raw_table, table_type, business_key, fetch_time_col,
+        drop_cols, final_schema, final_table, exclude_where)
+   VALUES
+       ('customers', 'customers', 'snapshot', ARRAY['cust_no'], 'extract_ts',
+        ARRAY['src_batch_id', 'src_row_num'], 'analyst', 'לקוחות',
+        $$status = 'closed'$$);
+
+   INSERT INTO meta.etl_column_map
+       (table_key, source_col, target_col, target_type, source_format, reason, ordinal)
+   VALUES
+       ('customers', 'cust_no',    'מספר_לקוח',   'bigint', NULL,         'שם ברור לאנליסט', 1),
+       ('customers', 'open_dt',    'תאריך_פתיחה', 'date',   'DD/MM/YYYY', 'מגיע כטקסט',      2),
+       ('customers', 'extract_ts', 'זמן_שליפה',   'date',   NULL,         'זמן השליפה של הספק', 3);
+   ```
+5. **Run it**:
+   ```
+   python main.py --pipeline config/tables/customers.yaml
+   ```
+
+> **Existing tables in `public`** built the old way (with duplicates and supplier columns) are not touched: step 2 stops with a clear message. Rename the old table (e.g. `ALTER TABLE public.customers RENAME TO customers_old;`) and let the first run build a clean one.
+
+### Everyday use
+
+```
+python main.py --pipeline config/tables/<table>.yaml                    # full run
+python main.py --pipeline config/tables/<table>.yaml --file D:/in/x.csv # other file, same table
+python main.py --pipeline config/tables/<table>.yaml --final-only       # rebuild analyst table only
+python main.py --pipeline config/tables/<table>.yaml --setup-only       # apply sql/ files only
+```
+
+- **Renaming a column / changing a type / changing which rows are excluded** → `UPDATE` the mapper or `meta.etl_tables`, then run with `--final-only`. No fetch, no code change, no git.
+- **New table** → add its rows to `meta.etl_tables` + `meta.etl_column_map`, copy a YAML, run.
+- **Pause a table** → `UPDATE meta.etl_tables SET is_active = false WHERE table_key = '...'`.
+- **Scheduling** → the weekly tables run the same command from any scheduler (OpenShift CronJob, Windows Task Scheduler); snapshot tables are run by hand.
+
+### YAML reference (`config/tables/*.yaml`)
+
+| Key | Meaning |
 |---|---|
-| `sql/001_meta_schema.sql` | Config tables, mapper, run log, migrations log |
-| `sql/002_load_raw.sql` | `meta.load_raw(table_key)` — staging → public, dedup by row hash |
-| `sql/003_build_final.sql` | `meta.build_final(table_key)` — public → analyst via the mapper |
-| `core/table_pipeline.py` | The runner: fetch → staging (COPY), then steps 2+3 in one transaction |
-| `db/migrations.py` | Applies `sql/` files |
+| `pipeline.table_key` | The row in `meta.etl_tables`. Its presence is what makes `main.py` use this pipeline. |
+| `source.type` | `trino` or `file` |
+| `source.host / port / user / catalog / schema / table` | Trino source (`password` or `password_env` optional) |
+| `source.path / separator / encoding` | File source. `--file` overrides `path`, so a file whose name changes still maps to the same table. |
+| `source.chunk_size` | Rows per chunk (default 10000) |
+| `postgres.host / port / database / user` | Target Postgres |
+| `postgres.password_env` | Name of the environment variable holding the password (or `password`, not recommended) |
+
+### `meta.etl_tables` reference
+
+| Column | Meaning |
+|---|---|
+| `table_key` | Name you use in the YAML (usually the source table name) |
+| `raw_schema`, `raw_table` | Raw table (`public` by default). The staging table gets the same name in `staging`. |
+| `table_type` | `snapshot` or `insert_only` |
+| `business_key` | Original column(s) identifying a record. Required for `snapshot`. |
+| `fetch_time_col` | The supplier's fetch-time column: the only supplier column kept; never part of the comparison |
+| `drop_cols` | Supplier extra columns, never stored |
+| `final_schema`, `final_table` | Where the analyst table goes (Hebrew names allowed) |
+| `exclude_where` | SQL condition on the **original** column names; matching rows are left out of the analyst table (they stay in `public`) |
+| `is_active` | `false` = skip this table |
+
+### `meta.etl_column_map` reference (the mapper)
+
+| Column | Meaning |
+|---|---|
+| `source_col` | Original name, as in `public` |
+| `target_col` | Name in the analyst table. Max 63 bytes (≈31 Hebrew letters). |
+| `target_type` | `text` (default), `integer`, `bigint`, `numeric`, `date`, `timestamp`, `boolean` |
+| `source_format` | For `date` / `timestamp`: the text pattern, e.g. `DD/MM/YYYY` or `DD/MM/YYYY HH24:MI`. Empty = ISO. |
+| `reason` | Why the column was renamed (documentation) |
+| `ordinal` | Column order in the analyst table |
+| `is_active` | `false` = leave the column out of the analyst table |
+
+A column with no mapper row keeps its original name and stays text. Analysts query Hebrew names in double quotes: `SELECT "מספר_לקוח" FROM analyst."לקוחות" WHERE "גרסה_אחרונה";`
+
+### Checking a run
+
+```sql
+SELECT table_key, started_at, staged_rows, raw_inserted, final_rows, cast_failures, status, error_detail
+FROM meta.etl_runs ORDER BY started_at DESC LIMIT 20;
+```
+
+`cast_failures > 0` means some values could not be converted; the run log line names the column.
+
+| Message | Meaning / fix |
+|---|---|
+| `table_key 'x' has no row in meta.etl_tables` | Describe the table (setup step 4) |
+| `... exists but was not created by this pipeline (no _row_hash)` | An old-style table is in the way — rename it |
+| `fetch_time_col ... not found` / `business_key column(s) ... not found` | The column names in `meta.etl_tables` don't match the source |
+| `SQL error: ... check exclude_where` | `exclude_where` is invalid or uses Hebrew/new names instead of original ones |
+| `the columns of ... changed ... but a view depends on it` | A mapper change needs the analyst table recreated; drop the view, run, recreate the view |
 
 ---
 
@@ -54,14 +176,22 @@ python main.py --pipeline config/tables/<table>.yaml --setup-only  # apply sql/ 
 
 ```
 ETL/
-├── main.py                         # CLI entry point
+├── main.py                         # CLI entry point (one-click and legacy YAML)
 ├── requirements.txt                # Core dependencies
+├── sql/                            # One-click pipeline SQL, applied automatically
+│   ├── 001_meta_schema.sql         # meta.etl_tables, meta.etl_column_map, run + migration logs
+│   ├── 002_load_raw.sql            # meta.load_raw(): staging → public
+│   └── 003_build_final.sql         # meta.build_final(): public → analyst
+├── config/
+│   ├── pipeline.yaml               # Legacy YAML example
+│   └── tables/                     # One-click YAML, one file per table
 ├── requirements-web.txt            # Web UI dependencies
 ├── .streamlit/
 │   └── config.toml                 # Streamlit server settings
 ├── core/
 │   ├── consts.py                   # Shared constants
-│   ├── pipeline_runner.py          # Orchestrates extract → transform → load
+│   ├── pipeline_runner.py          # Legacy YAML: extract → transform → load
+│   ├── table_pipeline.py           # One-click runner: fetch → staging, then load_raw + build_final
 │   └── registry.py                 # Transform plug-in registry (@register decorator)
 ├── extract/
 │   └── csv_reader.py               # stream_csv() — chunked CSV generator
@@ -75,6 +205,7 @@ ETL/
 │       └── numeric_parser.py
 ├── db/
 │   ├── engine.py                   # SQLAlchemy engine factory
+│   ├── migrations.py               # Applies sql/ files, records them in meta.schema_migrations
 │   └── loader.py                   # bulk_load() — SQL Server & PostgreSQL writer
 ├── utils/
 │   ├── file_utils.py               # resolve_path(), assert_readable()
@@ -126,7 +257,9 @@ pip install -r requirements-web.txt
 
 ---
 
-## CLI Usage
+## CLI Usage (legacy YAML)
+
+> For loading into PostgreSQL through staging → public → analyst, use the **one-click pipeline** above. The format below (a `destination:` block, no `pipeline.table_key`) still works as before. Note: it takes its database connection from `db/engine.py`, which still holds an unadapted placeholder.
 
 ### Pipeline YAML
 
@@ -193,7 +326,7 @@ The UI walks through four steps:
 
 | Step | What happens |
 |------|-------------|
-| **1 — Input & Destination** | Choose an input source (server path, file upload, or Trino table) and configure the SQL Server, PostgreSQL, or S3 destination. Add multiple sources to a batch queue. |
+| **1 — Input & Destination** | Choose an input source (server path, file upload, or Trino table) and configure the SQL Server, PostgreSQL, or S3 destination. Add multiple sources to a batch queue. (Column renaming moved to the Postgres mapper — see the one-click pipeline.) |
 | **2 — Actions & Batch Review** | Select transform actions (cleaning, validation, parsing, mining). Review the queue. |
 | **3 — Review** | Preview the first 1 000 rows. If the target table already exists, choose a load mode. View column statistics. Draft a SQL query (not executed). |
 | **4 — Upload & Progress** | Jobs run sequentially. Live progress bars update every 300 ms. Download the audit log CSV when done. |
