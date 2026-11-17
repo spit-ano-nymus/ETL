@@ -149,7 +149,7 @@ postgres:
 4. Which columns does the supplier add that must not be stored?
 5. Which rows should the analysts not see?
 
-**5. Create the table's config file** at `config/tables/<table>_setup.sql`, next to the YAML. Copy `tests/local/setup_customer.sql` and edit it. It is plain SQL: one row describing the table, one row per column. It starts with a `DELETE`, so it is safe to edit and re-apply as often as you like.
+**5. Create the table's config file** at `config/tables/<table>_setup.sql`, next to the YAML. Copy `config/tables/example_setup.sql` and edit it. It is plain SQL: one row describing the table, one row per column. It starts with a `DELETE`, so it is safe to edit and re-apply as often as you like.
 
 **6. Apply it.** This also creates the `meta` tables the first time it runs against a database:
 ```
@@ -165,7 +165,7 @@ The output tells you how many rows arrived, how many were new, and how many reac
 
 **8. Look at the result.**
 ```
-python main.py --pipeline config/tables/orders.yaml --sql tests/local/show_objects.sql
+python main.py --pipeline config/tables/orders.yaml --sql queries/show_objects.sql
 ```
 
 **9. Schedule it, if it should run by itself.** One cron line, the same command. cron does not inherit your shell, so set the password in the line:
@@ -188,8 +188,6 @@ Every error says what to fix. The common ones are listed under **Checking a run*
 
 > **Existing tables in `public`** built the old way (with duplicates and supplier columns) are not touched: step 2 stops with a clear message. Rename the old table (e.g. `ALTER TABLE public.customers RENAME TO customers_old;`) and let the first run build a clean one.
 
-> **Practice first.** `tests/local/` has a worked example (`customer`) and an exercise (`payments`) with sample CSVs, so you can do all of the above against a local PostgreSQL before touching the real one.
-
 ### Everyday use
 
 ```
@@ -211,7 +209,7 @@ python main.py --pipeline config/tables/<table>.yaml --sql FILE.sql     # run a 
 #### `--sql` notes
 
 - Runs the whole file in **one transaction**: if any statement fails, nothing in the file is applied.
-- Prints a table for every `SELECT` in the file, so a check file like `tests/local/check_customer.sql` shows all its queries at once.
+- Prints a table for every `SELECT` in the file, so a check file like `queries/show_objects.sql` shows all its queries at once.
 - Repeatable (`--sql a.sql --sql b.sql`); files run in the order given.
 - Add `--autocommit` for statements Postgres refuses inside a transaction (`VACUUM`, `CREATE DATABASE`, `CREATE INDEX CONCURRENTLY`).
 
@@ -301,10 +299,10 @@ FROM meta.etl_runs ORDER BY started_at DESC LIMIT 20;
 
 `cast_failures > 0` means some values could not be converted, or cleaning left them empty; the run log line names the column.
 
-`tests/local/show_objects.sql` answers "does every table have its three tables, and how many rows are in each":
+`queries/show_objects.sql` answers "does every table have its three tables, and how many rows are in each":
 
 ```
-python main.py --pipeline config/tables/<any>.yaml --sql tests/local/show_objects.sql
+python main.py --pipeline config/tables/<any>.yaml --sql queries/show_objects.sql
 ```
 
 | Message | Meaning / fix |
@@ -341,8 +339,8 @@ ETL/
 │   ├── 002_load_raw.sql            # meta.load_raw(): staging → public
 │   └── 003_build_final.sql         # meta.build_final(): public → analyst
 ├── config/
-│   ├── pipeline.yaml               # Legacy YAML example
-│   └── tables/                     # One-click YAML, one file per table
+│   └── tables/                     # Per-table YAML + config SQL (example_*.yaml, example_setup.sql)
+├── queries/                        # Handy read-only SQL to run with --sql
 ├── requirements-web.txt            # Web UI dependencies
 ├── .streamlit/
 │   └── config.toml                 # Streamlit server settings

@@ -1,7 +1,7 @@
 -- =============================================================================
 -- "What exists in the database, and does every table have its three tables?"
 --
---   python main.py --pipeline <any table yaml> --sql tests/local/show_objects.sql
+--   python main.py --pipeline <any table yaml> --sql queries/show_objects.sql
 --
 -- Works on any database the pipeline manages — it reads meta.etl_tables.
 -- =============================================================================

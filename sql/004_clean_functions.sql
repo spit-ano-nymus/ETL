@@ -64,7 +64,7 @@ LANGUAGE sql IMMUTABLE AS
 $$ SELECT nullif(regexp_replace(coalesce(v, ''), '[^' || allowed || ']', '', 'g'), '') $$;
 
 -- Row count of a table that may not exist yet (NULL instead of an error).
--- Used by tests/local/show_objects.sql.
+-- Used by queries/show_objects.sql.
 CREATE OR REPLACE FUNCTION meta.count_rows(p_schema text, p_table text) RETURNS bigint
 LANGUAGE plpgsql STABLE AS $$
 DECLARE n bigint;
