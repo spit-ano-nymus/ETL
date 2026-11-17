@@ -15,6 +15,62 @@ logger = logging.getLogger(__name__)
 
 # ── table existence check ─────────────────────────────────────────────────────
 
+def assert_not_pipeline_table(table: str, schema: str, engine) -> None:
+    """
+    Refuse to let this UI write to a table the one-click pipeline manages.
+
+    The pipeline keeps `public` free of duplicates and `analyst` as a rebuilt
+    copy, and a snapshot table's `public` rows are the only record of how a
+    row looked in earlier fetches. A UI load in replace mode empties the table
+    first, which would destroy that history; an append load would put rows in
+    that the pipeline's hash never saw.
+
+    Raises RuntimeError naming the table, what it is, and what to run instead.
+    Does nothing when the database has no meta.etl_tables (not a pipeline
+    database) or when the check itself cannot run.
+    """
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('meta.etl_tables') IS NOT NULL")).scalar():
+                return                      # not a pipeline database
+            row = conn.execute(
+                text("""
+                    SELECT table_key,
+                           CASE WHEN raw_schema = :s AND raw_table = :t THEN 'raw (public)'
+                                ELSE 'final (analyst)' END AS role
+                      FROM meta.etl_tables
+                     WHERE (raw_schema = :s AND raw_table = :t)
+                        OR (final_schema = :s AND final_table = :t)
+                     LIMIT 1
+                """),
+                {"s": schema, "t": table},
+            ).fetchone()
+    except Exception as exc:
+        logger.warning(
+            "Could not check whether %s.%s belongs to the one-click pipeline (%s) — "
+            "letting the load continue", schema, table, exc,
+        )
+        return
+
+    if row is None:
+        return
+
+    table_key, role = row
+    message = (
+        f"BLOCKED: {schema}.{table} is the {role} table of the one-click pipeline "
+        f"(table_key '{table_key}' in meta.etl_tables), so ETL Studio will not write to it.\n"
+        f"Why: this table is maintained by the pipeline. A replace load empties it first, "
+        f"which would delete the version history kept in public; an append load would add "
+        f"rows the pipeline's duplicate check never saw.\n"
+        f"Instead run:  python main.py --pipeline config/tables/{table_key}.yaml\n"
+        f"To load somewhere else, change the target table name in step 1."
+    )
+    logger.error(message)
+    raise RuntimeError(message)
+
+
 def check_table_exists(table: str, schema: str, engine) -> dict | None:
     """
     Return {"row_count": int, "columns": list[str]} if the table exists,
@@ -138,6 +194,7 @@ def get_destination_writer(job: dict) -> Callable[[pd.DataFrame, int], dict]:
         engine = get_engine(connection_string=conn_str)
         table = job["table_name"]
         schema = job.get("schema_name", "public")
+        assert_not_pipeline_table(table, schema, engine)
         load_mode = job.get("load_mode", "append")
         primary_keys = job.get("primary_keys", [])
         progress_cb = _make_progress_cb(job)

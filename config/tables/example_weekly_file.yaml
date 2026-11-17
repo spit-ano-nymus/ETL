@@ -1,0 +1,26 @@
+# =============================================================================
+# One-click pipeline — a table that arrives as a CSV file.
+#
+#   python main.py --pipeline config/tables/example_weekly_file.yaml
+#   python main.py --pipeline config/tables/example_weekly_file.yaml --file D:/in/trans_2026_11_07.csv
+#
+# --file overrides source.path, so a file whose name changes every week
+# (dates in the name) still maps to the same table_key.
+# =============================================================================
+
+pipeline:
+  table_key: trans                # the row in meta.etl_tables
+
+source:
+  type: file
+  path: D:/in/trans.csv
+  separator: ","
+  encoding: utf-8-sig
+  chunk_size: 10000
+
+postgres:
+  host: pg.internal
+  port: 5432
+  database: data
+  user: etl_user
+  password_env: PG_PASSWORD

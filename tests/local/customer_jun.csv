@@ -1,0 +1,7 @@
+cust_no,full_name,city,open_date,status,extract_ts,src_batch_id,src_row_num
+1001,דנה לוי,Tel Aviv,03/04/2020,active,2026-06-01 08:00:00,B-0601,1
+1002,יוסי כהן,Haifa,31/02/2021,active,2026-06-01 08:00:00,B-0601,2
+1003,נועה בר,Jerusalem,15/06/2019,closed,2026-06-01 08:00:00,B-0601,3
+1004,אבי מזרחי,Eilat,,active,2026-06-01 08:00:00,B-0601,4
+1005,מיכל שגב,Netanya,20/01/2026,active,2026-06-01 08:00:00,B-0601,5
+TEST01,בדיקה,Nowhere,01/01/2000,active,2026-06-01 08:00:00,B-0601,6

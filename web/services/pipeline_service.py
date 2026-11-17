@@ -55,8 +55,6 @@ def _run_job(
     source = job["file_source"]
     path = source["path"]
     actions = job.get("actions", {})
-    column_renames = job.get("column_renames", {})
-    column_drops = job.get("column_drops", [])
     chunk_size = 10_000
 
     started_at = datetime.utcnow()
@@ -92,14 +90,6 @@ def _run_job(
 
         for chunk in _stream:
             rows_read += len(chunk)
-
-            # Drop excluded columns first, then apply renames — both before any transform
-            if column_drops:
-                chunk = chunk.drop(columns=[c for c in column_drops if c in chunk.columns], errors="ignore")
-
-            # Apply column renames before any transform
-            if column_renames:
-                chunk = chunk.rename(columns=column_renames)
 
             # Transform
             transformed, dropped = apply_selected_transforms(chunk, actions)
